@@ -1,0 +1,10 @@
+metric,value
+total_decisions,1046
+employed_decisions,889
+unemployed_decisions,157
+employed_ratio,0.8499043977055449
+employed_avg_score,13.408323959505061
+unemployed_avg_score,12.993630573248408
+top10_employed_ratio,0.8895104895104895
+top20_employed_ratio,0.8895104895104895
+max_score,19

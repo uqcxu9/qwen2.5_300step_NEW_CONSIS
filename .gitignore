@@ -1,0 +1,5 @@
+# 排除大的 checkpoint 文件
+QWEN2.5_42_GRPO_1/checkpoints/*/actor/*.pt
+QWEN2.5_42_GRPO_1/checkpoints/*/data.pt
+# 排除 models 目录
+models/

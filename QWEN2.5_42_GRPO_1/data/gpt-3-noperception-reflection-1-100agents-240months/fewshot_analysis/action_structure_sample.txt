@@ -1,0 +1,236 @@
+# analyze_macro_awareness_final.py
+import pickle as pkl
+import pandas as pd
+import numpy as np
+import os
+
+# ==================== 配置 ====================
+class DummyUnpickler(pkl.Unpickler):
+    def find_class(self, module, name):
+        if 'ai_economist' in module:
+            return type(name, (), {})
+        return super().find_class(module, name)
+
+BASE = "/workspace/QWEN2.5_FEWSHOT/data"
+MODEL = "gpt-3-noperception-reflection-1-100agents-240months"
+DATA = os.path.join(BASE, MODEL)
+OUT = os.path.join(DATA, "fewshot_analysis")
+os.makedirs(OUT, exist_ok=True)
+
+# ==================== 加载数据 ====================
+print("📂 加载dense_log...")
+dense_log_path = os.path.join(DATA, "dense_log.pkl")
+
+with open(dense_log_path, "rb") as f:
+    dense_log = DummyUnpickler(f).load()
+
+print("✅ 数据加载成功")
+
+# ==================== 提取数据 ====================
+print("\n📊 提取agent决策和宏观指标...")
+
+states = dense_log['states']
+actions = dense_log['actions']
+
+n_agents = len([k for k in states[0].keys() if k != 'p'])
+n_timesteps = len(states)
+
+print(f"  Agents: {n_agents}")
+print(f"  Timesteps (states): {n_timesteps}")
+print(f"  Timesteps (actions): {len(actions)}")
+
+# 正确提取：action是字典 {'SimpleLabor': 0/1, 'SimpleConsumption': 0-50}
+agent_consumption = {i: [] for i in range(n_agents)}
+agent_work = {i: [] for i in range(n_agents)}
+
+for t, action in enumerate(actions):
+    for i in range(n_agents):
+        agent_id = str(i)
+        if agent_id in action:
+            agent_action = action[agent_id]
+            
+            # 提取工作决策
+            work_decision = agent_action.get('SimpleLabor', 0)
+            
+            # 提取消费决策
+            consumption_idx = agent_action.get('SimpleConsumption', 0)
+            consumption_prop = consumption_idx * 0.02  # 转换为比例
+            
+            agent_work[i].append(work_decision)
+            agent_consumption[i].append(consumption_prop)
+        else:
+            agent_work[i].append(0)
+            agent_consumption[i].append(0)
+
+print(f"✅ 提取完成")
+print(f"  Agent 0的决策数: {len(agent_work[0])}")
+print(f"  Agent 0前5个work决策: {agent_work[0][:5]}")
+print(f"  Agent 0前5个consumption决策: {[f'{c:.2f}' for c in agent_consumption[0][:5]]}")
+
+# 验证数据
+total_work_decisions = sum([sum(agent_work[i]) for i in range(n_agents)])
+total_consumption = sum([sum(agent_consumption[i]) for i in range(n_agents)])
+
+print(f"\n✅ 数据验证:")
+print(f"  总就业决策次数: {total_work_decisions}")
+print(f"  平均每月就业人数: {total_work_decisions/len(actions):.1f}")
+print(f"  总消费金额: {total_consumption:.0f}")
+
+# 计算宏观指标
+print("\n📊 计算宏观指标...")
+
+# 1. 失业率
+unemployment_rate = []
+for t in range(len(actions)):
+    employed_count = sum([agent_work[i][t] for i in range(n_agents)])
+    unemployment_rate.append(1 - employed_count / n_agents)
+
+# 2. 平均消费倾向
+avg_consumption_prop = []
+for t in range(len(actions)):
+    consumptions = [agent_consumption[i][t] for i in range(n_agents)]
+    avg_consumption_prop.append(np.mean(consumptions))
+
+# 3. GDP增长率（用就业率作为GDP proxy）
+gdp_proxy = [1 - ur for ur in unemployment_rate]
+gdp_growth = []
+for t in range(1, len(gdp_proxy)):
+    if gdp_proxy[t-1] > 0:
+        growth = (gdp_proxy[t] - gdp_proxy[t-1]) / gdp_proxy[t-1]
+        gdp_growth.append(growth)
+
+print(f"✅ 宏观指标计算完成")
+print(f"  失业率数据点: {len(unemployment_rate)}")
+print(f"  平均消费数据点: {len(avg_consumption_prop)}")
+print(f"  GDP增长率数据点: {len(gdp_growth)}")
+
+# ==================== 基本统计 ====================
+print("\n" + "=" * 70)
+print("📊 宏观指标基本统计")
+print("=" * 70)
+
+print(f"\n失业率:")
+print(f"  均值: {np.mean(unemployment_rate)*100:.2f}%")
+print(f"  中位数: {np.median(unemployment_rate)*100:.2f}%")
+print(f"  范围: [{np.min(unemployment_rate)*100:.2f}%, {np.max(unemployment_rate)*100:.2f}%]")
+
+print(f"\n平均消费倾向:")
+print(f"  均值: {np.mean(avg_consumption_prop):.3f}")
+print(f"  中位数: {np.median(avg_consumption_prop):.3f}")
+print(f"  范围: [{np.min(avg_consumption_prop):.3f}, {np.max(avg_consumption_prop):.3f}]")
+
+print(f"\nGDP增长率:")
+print(f"  均值: {np.mean(gdp_growth)*100:.2f}%")
+print(f"  中位数: {np.median(gdp_growth)*100:.2f}%")
+print(f"  标准差: {np.std(gdp_growth)*100:.2f}%")
+print(f"  范围: [{np.min(gdp_growth)*100:.2f}%, {np.max(gdp_growth)*100:.2f}%]")
+
+# ==================== 经济周期分析 ====================
+print("\n" + "=" * 70)
+print("📊 经济周期分析")
+print("=" * 70)
+
+# 对齐数据
+min_len = min(len(gdp_growth), len(avg_consumption_prop) - 1, len(unemployment_rate) - 1)
+df_analysis = pd.DataFrame({
+    'timestep': range(min_len),
+    'gdp_growth': gdp_growth[:min_len],
+    'unemployment_rate': unemployment_rate[1:min_len+1],
+    'avg_consumption': avg_consumption_prop[1:min_len+1]
+})
+
+# 定义经济状态
+df_analysis['economic_state'] = 'Normal'
+df_analysis.loc[df_analysis['gdp_growth'] < -0.02, 'economic_state'] = 'Recession'
+df_analysis.loc[df_analysis['gdp_growth'] > 0.02, 'economic_state'] = 'Boom'
+
+print(f"\n经济状态分布:")
+state_counts = df_analysis['economic_state'].value_counts()
+for state, count in state_counts.items():
+    print(f"  {state:10s}: {count:3d} 个月 ({count/len(df_analysis)*100:.1f}%)")
+
+print(f"\n不同经济状态下的平均消费倾向:")
+consumption_by_state = df_analysis.groupby('economic_state')['avg_consumption'].agg(['mean', 'std', 'count'])
+print("\n状态        均值     标准差   样本数")
+print("-" * 45)
+for state, row in consumption_by_state.iterrows():
+    print(f"{state:10s}  {row['mean']:.3f}   {row['std']:.3f}   {int(row['count']):6d}")
+
+# ==================== 关键问题：顺周期 vs 逆周期 ====================
+print("\n" + "=" * 70)
+print("🔍 关键问题：Agent是否进行逆周期调整？")
+print("=" * 70)
+
+# 计算相关性
+df_analysis['consumption_change'] = df_analysis['avg_consumption'].diff()
+df_analysis['gdp_change'] = df_analysis['gdp_growth'].diff()
+df_corr = df_analysis[['consumption_change', 'gdp_change']].dropna()
+
+if len(df_corr) > 10:
+    correlation = df_corr['consumption_change'].corr(df_corr['gdp_change'])
+    print(f"\n消费变化 vs GDP增长变化的相关系数: {correlation:.3f}")
+    
+    if correlation > 0.3:
+        print("\n  ⚠️ 正相关！Agent倾向于顺周期消费（加剧波动）")
+        print("     解释：")
+        print("     - 经济好时，agent增加消费 → 可能导致过热")
+        print("     - 经济差时，agent减少消费 → 加剧衰退")
+        print("     - Agent缺乏'逆周期调节'能力")
+    elif correlation < -0.3:
+        print("\n  ✅ 负相关！Agent倾向于逆周期消费（稳定经济）")
+        print("     解释：")
+        print("     - 经济好时，agent减少消费（储蓄）")
+        print("     - 经济差时，agent增加消费（刺激）")
+    else:
+        print("\n  ➡️ 弱相关。Agent决策与宏观周期关系不明显")
+        print("     解释：")
+        print("     - Agent似乎不关注宏观经济状态")
+        print("     - 决策主要基于个人财富/收入")
+
+# ==================== 关键发现总结 ====================
+print("\n" + "=" * 70)
+print("🔍 关键发现总结")
+print("=" * 70)
+
+print("\n1. 宏观意识缺失:")
+print(f"   - 消费-GDP相关性: {correlation:.3f}")
+if abs(correlation) < 0.2:
+    print("   - ⚠️ Agent决策与宏观周期几乎无关")
+    print("   - Agent不知道经济在衰退还是繁荣")
+
+print("\n2. 经济周期:")
+衰退比例 = (df_analysis['economic_state'] == 'Recession').sum() / len(df_analysis)
+繁荣比例 = (df_analysis['economic_state'] == 'Boom').sum() / len(df_analysis)
+print(f"   - 衰退期占比: {衰退比例*100:.1f}%")
+print(f"   - 繁荣期占比: {繁荣比例*100:.1f}%")
+
+print("\n3. 为什么符号一致性只有31.58%:")
+print("   - Agent只能看到自己的微观状态（收入、财富）")
+print("   - 无法获取宏观信号（整体失业率、通胀、GDP）")
+print("   - 缺乏'预见性'，只能'反应性'决策")
+print("   - 结果：无法预测经济增长/衰退方向")
+
+print("\n4. 改进建议:")
+print("   a) 在prompt中注入宏观信号")
+print("   b) 提供'经济学家建议'（基于宏观状态）")
+print("   c) 让agent知道'现在是衰退/繁荣期'")
+
+# ==================== 保存结果 ====================
+result_path = os.path.join(OUT, "macro_awareness_summary.csv")
+with open(result_path, 'w') as f:
+    f.write("metric,value\n")
+    f.write(f"avg_gdp_growth,{np.mean(gdp_growth)}\n")
+    f.write(f"std_gdp_growth,{np.std(gdp_growth)}\n")
+    f.write(f"avg_unemployment,{np.mean(unemployment_rate)}\n")
+    f.write(f"avg_consumption_prop,{np.mean(avg_consumption_prop)}\n")
+    f.write(f"consumption_gdp_correlation,{correlation}\n")
+    f.write(f"n_recession_periods,{(df_analysis['economic_state']=='Recession').sum()}\n")
+    f.write(f"n_boom_periods,{(df_analysis['economic_state']=='Boom').sum()}\n")
+    f.write(f"recession_ratio,{衰退比例}\n")
+    f.write(f"boom_ratio,{繁荣比例}\n")
+
+print(f"\n✅ 结果已保存: {result_path}")
+
+print("\n" + "=" * 70)
+print("✅ 宏观意识分析完成！")
+print("=" * 70)

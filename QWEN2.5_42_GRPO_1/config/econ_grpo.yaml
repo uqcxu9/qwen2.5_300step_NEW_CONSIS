@@ -1,0 +1,173 @@
+# specify the default per-component configs
+defaults:
+  - /actor@actor_rollout_ref.actor: dp_actor
+  - /data@data: legacy_data
+  - /ref@actor_rollout_ref.ref: dp_ref
+  - /rollout@actor_rollout_ref.rollout: rollout
+  - /model@actor_rollout_ref.model: hf_model
+  - /critic@critic: dp_critic
+  - /reward_model@reward_model: dp_reward_model
+  - /algorithm@algorithm.rollout_correction: rollout_correction
+  - _self_
+
+# ===== 数据配置 =====
+# 注意: verl_dataset 目录目前为空，需要先运行 prepare_verl_data.py 生成数据
+# 或者使用已有的 verl_dataset_small 数据集
+data:
+  train_files: /workspace/QWEN2.5_42_GRPO_1/data/verl_dataset/train.parquet
+  val_files: /workspace/QWEN2.5_42_GRPO_1/data/verl_dataset/val.parquet
+  prompt_key: prompt
+  max_prompt_length: 2048
+  max_response_length: 192
+  train_batch_size: 16
+  val_batch_size: 16
+  return_raw_input_ids: False
+  return_raw_chat: False
+  shuffle: True
+  seed: 42
+
+# ===== 模型与 Rollout 配置 =====
+actor_rollout_ref:
+  hybrid_engine: True    # Verl 目前要求 True
+
+  model:
+    path: /workspace/models/Qwen2.5-7B-Instruct
+    trust_remote_code: True
+    use_remove_padding: False
+    enable_gradient_checkpointing: True
+    override_config:
+      attn_implementation: eager
+    # LoRA 配置 (可选，启用后可减少显存占用)
+    # lora_rank: 8
+    # lora_alpha: 16
+    # target_modules: "all-linear"
+
+  actor:
+    strategy: fsdp   # 继续用 FSDP，但我们限制成单进程 + offload
+
+    # 先保守一点，能跑为第一优先
+    ppo_mini_batch_size: 2
+    ppo_micro_batch_size_per_gpu: 1
+    use_dynamic_bsz: True
+    ppo_max_token_len_per_gpu: 4096   # 足够覆盖 2048+192，并留点余量
+    grad_clip: 1.0
+    clip_ratio: 0.2
+    entropy_coeff: 0.01
+
+    use_kl_loss: False
+    loss_agg_mode: token-mean
+
+    optim:
+      lr: 1e-6
+      weight_decay: 0.01
+      lr_warmup_steps_ratio: 0.1
+      lr_scheduler_type: cosine
+      min_lr_ratio: 0.1
+
+    fsdp_config:
+      dtype: bfloat16
+      model_dtype: bfloat16
+
+      # ✅ 关键修改：只用 1 个 rank，不再搞一堆 rank 去互连 TCPStore
+      fsdp_size: 1
+
+      use_torch_compile: False
+      wrap_policy:
+        min_num_params: 0
+
+      # ✅ 打开 offload，进一步兜底显存
+      param_offload: True
+      optimizer_offload: True
+
+  ref:
+    fsdp_config:
+      param_offload: True
+      wrap_policy:
+        min_num_params: 0
+      use_torch_compile: False  # 禁用 torch_compile 避免 SIGSEGV
+    log_prob_micro_batch_size_per_gpu: 4
+
+  rollout:
+    mode: sync
+    name: vllm
+
+    tensor_model_parallel_size: 1
+    data_parallel_size: 1
+    pipeline_model_parallel_size: 1
+
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    n: 1
+
+    # 给 vLLM 一个更稳的显存限制
+    gpu_memory_utilization: 0.5
+    max_num_seqs: 2
+    max_model_len: 2304
+    enforce_eager: True
+    free_cache_engine: True
+
+    val_kwargs:
+      temperature: 0.0
+      top_p: 1.0
+      top_k: -1
+      n: 1
+
+# ===== 算法配置 (GRPO) =====
+algorithm:
+  gamma: 1.0
+  lam: 1.0
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: True
+  use_kl_in_reward: False
+  kl_penalty: kl
+  kl_ctrl:
+    type: fixed
+    kl_coef: 0.001
+
+# ===== Critic 配置 (GRPO不需要critic) =====
+critic:
+  enable: False
+
+# ===== Reward Model 配置 (使用自定义函数) =====
+reward_model:
+  enable: False
+
+# ===== 自定义 Reward Function =====
+custom_reward_function:
+  path: /workspace/QWEN2.5_42_GRPO_1/RL/reward.py
+  name: compute_score
+
+# ===== 训练器配置 =====
+trainer:
+  balance_batch: True
+  total_epochs: 3
+  total_training_steps: null
+  project_name: econ_grpo
+  experiment_name: qwen25_buffer_stock
+  logger: ["console"]
+  nnodes: 1
+  n_gpus_per_node: 1
+  save_freq: 1
+  val_before_train: False
+  test_freq: 1
+  critic_warmup: 0
+  resume_mode: disable
+  default_local_dir: /workspace/QWEN2.5_42_GRPO_1/checkpoints
+  ray_wait_register_center_timeout: 600
+  device: cuda
+
+# ===== 其他必需配置 =====
+global_profiler:
+  enable: False
+  tool: null
+  steps: null
+  profile_continuous_steps: False 
+
+transfer_queue:
+  enable: False
+
+ray_kwargs:
+  ray_init:
+    num_cpus: 8
+    num_gpus: 1

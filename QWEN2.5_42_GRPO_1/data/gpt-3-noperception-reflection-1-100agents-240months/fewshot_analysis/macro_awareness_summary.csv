@@ -1,0 +1,10 @@
+metric,value
+avg_gdp_growth,0.0016244936435237955
+std_gdp_growth,0.060543338878822586
+avg_unemployment,0.03683333333333336
+avg_consumption_prop,0.4472133333333333
+consumption_gdp_correlation,0.04258617898985156
+n_recession_periods,76
+n_boom_periods,67
+recession_ratio,0.3179916317991632
+boom_ratio,0.2803347280334728
